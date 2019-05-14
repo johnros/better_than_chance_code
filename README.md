@@ -1,2 +1,3 @@
-# better_than_chance_code
-Souce code accompanying the Better-Than-Chance paper
+# Better-Than-Chance R code
+
+Souce code accompanying the Better-Than-Chance Biostatistics paper. 
