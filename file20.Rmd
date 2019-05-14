@@ -1,0 +1,136 @@
+---
+title: "Short term memory (AR(1)) with signal in HIGH PCs"
+author: "Jonathan Rosenblatt"
+date: "8/2/2019"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+
+```{r}
+n.permutations <- 3e2
+n.replications <-  1e3
+```
+
+```{r preliminaries}
+file.name <- "file20"
+setwd('~/workspace/permuting_accuracy/Round4/')
+
+balance <- TRUE   # set for TRUE for balanced folding ana refolding.
+with.cv <- FALSE
+p <- 23
+n <- 40 # total sample size-> n/2 in each group.
+n.folds <- 4
+
+source('Gilron Effect of Cross Validatino.R')
+
+effects <- seq(0, 10, length=3) # change in location
+
+## Dependence
+Sigma <- ar1_cov(n = p, rho=0.6)
+lattice::levelplot(Sigma)
+Sigma.inv <- solve(Sigma) %>% round(1)
+lattice::levelplot(Sigma.inv)
+Sigma.sqrt <- t(chol(Sigma))
+
+Sigma.eigen <- eigen(Sigma, symmetric=TRUE)
+direction0 <- Sigma.eigen$vectors[,which.max(abs(Sigma.eigen$values))] 
+maha <- direction0 %*% solve(Sigma) %*% direction0 %>% c
+direction <- direction0 / sqrt(n/2*maha)
+```
+
+
+## Fixed folds. Cross-Validated. All in one.
+```{r}
+RhpcBLASctl::blas_set_num_threads(1)
+registerDoMC(cores=100)
+```
+
+
+```{r independent noise variable folds}
+pvals.1.9 <- foreach(j=1:n.replications, .combine=rbind) %dopar%{
+  foreach(effect=effects, .combine=rbind)  %do% {
+    
+    labels <- sample(c(rep(TRUE, n/2), rep(FALSE,n/2))) # group assignemt labels
+    
+    ## Gaussian noise
+    # effect <- effects[[3]]
+    shift <- matrix(effect * direction, nrow=20, ncol=23, byrow = TRUE)
+    noise <-t(Sigma.sqrt%*%matrix(rnorm(n*p), ncol = n, nrow=p))
+    noise[labels,] <- noise[labels,] + shift
+    
+    ## Compute observed statistic
+    x1 <- noise[labels,]
+    x2 <- noise[!labels,]
+    
+    ## Asign observations to folds. Use the simple label structure to balance folds.
+    fold.ids <- balanced_folding(labels, n.folds, TRUE)
+    # capture.output(table(fold.ids, labels), file=balance.log, append = TRUE)
+    
+    # Observables 
+    ts <-statistics(x1 = x1, 
+                    x2 = x2, 
+                    Sigma.inv = Sigma.inv, 
+                    noise = noise, 
+                    labels = labels, 
+                    fold.ids = fold.ids, 
+                    with.cv=with.cv)
+    
+    # Prepare to permute
+    old.labels <- labels
+    old.folds.ids <- fold.ids
+    
+    # Initialize permuted statistics
+    permuted <- matrix(NA, ncol=length(ts), nrow=n.permutations)
+    
+    for(i in 1:n.permutations){
+      # i <- 1
+      
+      labels <- sample(labels) # label switching
+      fold.ids <- balanced_folding(labels, n.folds, TRUE) # refold
+      x1 <- noise[labels,]
+      x2 <- noise[!labels,]
+      
+      permuted[i,] <- statistics(x1 = x1, 
+                                 x2 = x2,
+                                 Sigma.inv =Sigma.inv, 
+                                 noise = noise,
+                                 labels = labels,
+                                 fold.ids = fold.ids,
+                                 with.cv=with.cv)
+    } # End permutation
+    
+    # Compute p-vals for each statistic
+    pvals <- rep(NA, length(ts))
+    for(i in seq_along(ts)){
+      # i <- 1
+      pvals[i] <- mean(permuted[,i]>=ts[i], na.rm=TRUE)
+    }
+    names(pvals) <- names(ts)
+    
+    c(effect=effect, pvals, replication=j) 
+  }
+} 
+  
+pbPost(type = "note", body = "Done", the.message)
+# save.image(file=paste(file.name,".RData", sep=''))
+```
+
+
+
+```{r analyze multiple effects}
+# load("file20.RData")
+source('prepare_graphics.R')
+plot(plot.3)
+```
+
+
+```{r}
+pdf(file = paste('Output/',file.name,'.pdf', sep=''))
+plot(plot.3)
+dev.off()
+```
+
+

@@ -1,0 +1,139 @@
+---
+title: "Bootstrapped effect"
+author: "Jonathan Rosenblatt"
+date: "Aug 8, 2016"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r}
+n.permutations <- 3e2
+n.replications <-  1e2
+```
+
+
+```{r preliminaries}
+file.name <- "file13"
+setwd('~/workspace/permuting_accuracy/Round4/')
+
+p <- 23
+n <- 4e1 # total sample size-> n/2 in each group.
+n.folds <- 4
+
+source('Gilron Effect of Cross Validatino.R')
+
+## Signal in location
+effects <- seq(0, 10, length=3) # change in location
+
+## Covariance
+Sigma <- diag(p)
+Sigma.inv <- solve(Sigma)
+# lattice::levelplot(Sigma)
+direction0 <- rep(1,p)
+maha <- direction0 %*% solve(Sigma) %*% direction0 %>% c
+direction <-  direction0 / sqrt(n/2*maha)
+```
+
+
+```{r}
+RhpcBLASctl::blas_set_num_threads(1)
+registerDoMC(cores=100)
+```
+
+
+## Fixed folds. Cross-Validated. All in one.
+```{r independent noise variable folds}
+pvals.1.9 <- foreach(j=1:n.replications, .combine=rbind)  %:% foreach(effect=effects, .combine=rbind)  %dopar% {
+
+  labels <- sample(c(rep(TRUE, n/2), rep(FALSE,n/2))) # group assignemt labels
+  
+  # Gaussian noise
+  noise <- rmvnorm(n=n, sigma = Sigma)
+
+  # Shift alternative:
+  # effect <- effects[[3]]
+  shift <- matrix(effect * direction, nrow=n/2, ncol=p, byrow = TRUE)
+  noise[labels,] <- noise[labels,] + shift
+
+  # Asign observations to folds. Use the simple label structure to balance folds.
+  fold.ids <- balanced_folding(labels, n.folds, TRUE)
+  # capture.output(table(fold.ids, labels), file=balanc.log, append = TRUE)
+  
+  # Compute observed statistic
+  x1 <- noise[labels,]
+  x2 <- noise[!labels,]
+  
+  ts <- statisticsBootstrap(x1,x2,Sigma.inv,noise,labels,fold.ids)
+  
+  # Initialize result containers
+  permuted <- matrix(NA, ncol=length(ts), nrow=n.permutations)
+  
+  old.labels <- labels
+  old.folds.ids <- fold.ids
+  
+  for(i in 1:n.permutations){
+    # i <- 1
+    
+    labels <- sample(labels) 
+    fold.ids <- balanced_folding(labels, n.folds, TRUE) # refolding.
+    x1 <- noise[labels,]
+    x2 <- noise[!labels,]
+    
+    # Checking balance:
+    # capture.output(table(.fold.ids, .labels), file=balanc.log, append = TRUE)
+    
+    permuted[i,] <- statisticsBootstrap(x1,x2,Sigma.inv,noise,labels,fold.ids)
+    
+  } # End permutation
+
+  # Compute p-vals for each statistic
+  pvals <- rep(NA, length(ts))
+  for(i in seq_along(ts)){
+    pvals[i] <- mean(ts[i]<=permuted[,i], na.rm=TRUE)
+  }
+  names(pvals) <- names(ts)
+  c(effect=effect, pvals, replication=j) 
+
+}
+pbPost(type = "note", body = "File2", title = the.message)
+# save.image(file=paste(file.name,".RData", sep=''))
+```
+
+
+```{r analyze multiple effects}
+# load(file='file13.RData') 
+pvals.1.9 %<>%  as.data.table()
+
+# names(pvals.1.9)[-1] <- c("Oracle", "Hotelling", "Hotelling.shrink", "Goeman", "sd", 
+# "lda.CV.1", "lda.CV.2", "lda.noCV.1", "lda.noCV.2", "svm.CV.1", 
+# "svm.CV.2", "svm.noCV.1", "svm.noCV.2", "svm.Boot.1", "svm.Boot.2", 
+# "svm.Boot.3", "svm.Boot.4", "lda.Boot.1")
+
+pvals.melt <- melt(pvals.1.9, id.vars=c("effect"), variable.name='statistic') 
+pvals.melt[,c("reject","effect.factor"):=list(as.numeric(value <= 0.05), as.factor(effect)),] 
+
+# Reorder levels
+# file13.levels <- c("Oracle", "Hotelling", "Hotelling.shrink", "Goeman", "sd", 
+# "lda.CV.1", "lda.noCV.1", "svm.CV.1", 
+# "svm.CV.2", "svm.noCV.1", "svm.noCV.2", "svm.Boot.1", "svm.Boot.2", 
+# "svm.Boot.3", "svm.Boot.4", "lda.Boot.1")
+# pvals.melt$statistic <- factor(pvals.melt$statistic, levels=file13.levels)
+
+# Filter statistics
+pvals.melt <- pvals.melt[!is.na(statistic),,]
+```
+
+```{r}
+source('prepare_graphics.R')
+plot(plot.3)
+```
+
+```{r}
+pdf(file = paste('Output/',file.name,'.pdf', sep=''))
+plot(plot.3)
+dev.off()
+```
+
+

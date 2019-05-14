@@ -1,0 +1,127 @@
+---
+title: "Logistic Regression (main effects only, augmented space)"
+author: "Jonathan Rosenblatt"
+date: "24/3/2019"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+n.permutations <- 3e2
+n.replications <-  1e3
+```
+
+
+```{r preliminaries}
+file.name <- "file44"
+setwd('~/workspace/permuting_accuracy/Round4/')
+
+p <- 23
+n <- 4e1 # total sample size-> n/2 in each group.
+n.folds <- 4
+
+source('Gilron Effect of Cross Validatino.R')
+
+makeLogisticSetup(p, beta00=1/p, B00=0)
+effects <- c(0,5,10)
+```
+
+```{r}
+noise <- matrix(rnorm(n*4e3*p), ncol=p, nrow=n*4e3)
+noise.augment <- augmentDesign(noise)
+Sigma.augment <- cov(noise.augment) %>% round(0) %>% as("dsCMatrix")
+sum(Sigma.augment)
+Sigma.aug.inv <- solve(Sigma.augment)
+# dim(Sigma.aug.inv)
+rm(noise, noise.augment)
+```
+
+
+
+## Fixed folds. Cross-Validated. All in one.
+```{r}
+RhpcBLASctl::blas_set_num_threads(1)
+registerDoMC(cores=100)
+```
+
+```{r independent noise variable folds}
+pvals.1.9 <- foreach(j=1:n.replications, .combine=rbind) %dopar%{
+  foreach(effect=effects, .combine=rbind)  %do% {
+    
+    ## Logistic regression
+    noise <- matrix(rnorm(n*p), ncol=p, nrow=n)
+
+    # effect <- effects[[3]]
+    probs <- makeLogisticProbs(beta0, B0, effect, noise)
+
+    labels <- makeLogisticLabels(probs,n)
+    # table(labels)
+    # plot(probs,type='h', col=labels+1)
+
+
+    ## Compute observed statistic
+    noise.augment <- augmentDesign(noise)
+    x1 <- noise.augment[labels,]
+    x2 <- noise.augment[!labels,]
+   
+    fold.ids <- balanced_folding(labels, n.folds, balance = TRUE)
+    # capture.output(table(fold.ids, labels), file=balance.log, append = TRUE)
+    ts <- statisticsAugmented(x1 = x1, 
+                    x2 = x2, 
+                    Sigma.inv = Sigma.aug.inv, 
+                    noise = noise.augment, 
+                    labels = labels, 
+                    fold.ids = fold.ids)
+    
+    
+    # Permute
+    old.labels <- labels
+    old.folds.ids <- fold.ids
+    permuted <- matrix(NA, ncol=length(ts), nrow=n.permutations)
+    
+    for(i in 1:n.permutations){
+      # i <- 1
+      
+      labels <- sample(labels) # label switching
+      fold.ids <- balanced_folding(labels, n.folds, TRUE) # refold
+      x1 <- noise.augment[labels,]
+      x2 <- noise.augment[!labels,]
+      
+      permuted[i,] <- statisticsAugmented(x1 = x1, 
+                                 x2 = x2,
+                                 Sigma.inv =Sigma.aug.inv, 
+                                 noise = noise.augment,
+                                 labels = labels,
+                                 fold.ids = fold.ids)
+    } # End permutation
+    
+    # Compute p-vals for each statistic
+    pvals <- rep(NA, length(ts))
+    for(i in seq_along(ts)){
+      # i <- 1
+      pvals[i] <- mean(permuted[,i]>=ts[i], na.rm=TRUE)
+    }
+    names(pvals) <- names(ts)
+    
+    c(effect=effect, pvals, replication=j) 
+  }
+} 
+
+pbPost(type = "note", body = "Done", title = the.message)
+save.image(file=paste(file.name,".RData", sep=''))
+```
+
+## Analysis
+```{r}
+# load('file44.RData')
+source('prepare_graphics.R')
+plot(plot.3)
+```
+
+```{r}
+pdf(file = paste('Output/',file.name,'.pdf', sep=''))
+plot(plot.3)
+dev.off()
+```
+

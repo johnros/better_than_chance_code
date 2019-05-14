@@ -1,0 +1,163 @@
+---
+title: "Basic setup. With tie breaking"
+author: "Jonathan Rosenblatt"
+date: "8/2/2017"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+
+```{r preliminaries}
+file.name <- "file33"
+setwd('~/workspace/permuting_accuracy/Round3/')
+
+
+balance <- TRUE   # set for TRUE for balanced folding ana refolding.
+n.replications <-  1e3
+p <- 23
+n <- 4e1 # total sample size-> n/2 in each group.
+n.permutations <- 3e2
+n.folds <- 4
+cost.1 <- 1e1
+cost.2 <- 1e-1
+
+source('Gilron Effect of Cross Validatino.R')
+
+effects <- seq(0, 0.5, length=3) # change in location
+
+Sigma <- diag(p)
+# lattice::levelplot(Sigma)
+direction0 <- rep(1,p)
+maha <- direction0 %*% solve(Sigma) %*% direction0 %>% c
+direction <- 23 * direction0 / sqrt(n/2*maha)
+```
+
+
+## Fixed folds. Cross-Validated. All in one.
+```{r}
+RhpcBLASctl::blas_set_num_threads(1)
+registerDoMC(cores=100)
+```
+
+
+```{r independent noise variable folds}
+pvals.1.9 <- foreach(j=1:n.replications, .combine=rbind) %dopar%{
+  foreach(effect=effects, .combine=rbind)  %do% {
+    
+    labels <- sample(c(rep(TRUE, n/2), rep(FALSE,n/2))) # group assignemt labels
+    
+    ## Gaussian noise
+    .noise <- rmvnorm(n=n, sigma = Sigma)
+    
+    ## Shift alternative:
+    # effect <- effects[[3]]
+    
+    noise <- .noise
+    shift <- matrix(effect * direction, nrow=n/2, ncol=p, byrow = TRUE)
+    noise[labels,] <- noise[labels,] + shift
+    
+    ## Compute observed statistic
+    x1 <- noise[labels,]
+    x2 <- noise[!labels,]
+    
+    ## Asign observations to folds. Use the simple label structure to balance folds.
+    fold.ids <- balanced_folding(labels, n.folds, balance = balance)
+    # capture.output(table(fold.ids, labels), file=balance.log, append = TRUE)
+    
+    # Observables 
+    ts <- statistics(x1,x2,Sigma,noise,labels,fold.ids,cost.1,cost.2)
+    
+    # Prepare to permute
+    old.labels <- labels
+    old.folds.ids <- fold.ids
+    
+    # Initialize permuted statistics
+    permuted <- matrix(NA, ncol=length(ts), nrow=n.permutations)
+    
+    for(i in 1:n.permutations){
+      # i <- 1
+      
+      labels <- sample(labels) # make permutation
+      fold.ids <- balanced_folding(labels, n.folds, balance) # refold
+      x1 <- noise[labels,]
+      x2 <- noise[!labels,]
+      
+      permuted[i,] <- statistics(x1,x2,Sigma,noise,labels,fold.ids,cost.1,cost.2)
+    } # End permutation
+    
+    # Compute p-vals for each statistic
+    pvals <- rep(NA, length(ts))
+    pvals.strickt <- rep(NA, length(ts))
+    for(i in seq_along(ts)){
+      pvals[i] <- mean(ts[i] <= permuted[,i], na.rm=TRUE)
+      pvals.strickt[i] <- mean(ts[i] < permuted[,i], na.rm=TRUE)
+    }
+    names(pvals) <- names(ts)
+    names(pvals.strickt) <- names(ts)
+    
+    c(effect=effect, pvals, pvals.strickt) 
+  }
+} 
+
+pbPost(type = "note", body = "Done", the.message)
+save.image(file=paste(file.name,".RData", sep=''))
+```
+
+
+```{r analyze multiple effects}
+# load("file33.RData")
+
+# Randomized test
+c.names <- colnames(pvals.1.9)
+n.names <- length(c.names)-1
+# paste(c.names, rep(c('weak','strong'), each=n.names/2), sep='.')
+
+wrap.randomizedTest <- function(x) randomizedTest(alpha = 0.05, x[1], x[2])
+
+col.index <- 2:(n.names/2)
+rejections <- c(effect=pvals.1.9[,'effect'])
+for(j in col.index){
+  # j <- 4
+  statistic <- c.names[j]
+  rejections <- cbind(rejections, 
+                      pvals.1.9[, c.names == statistic] %>% 
+                        apply(1, wrap.randomizedTest))
+}
+colnames(rejections) <- c.names[c(1,col.index)]
+
+rejections %<>%  as.data.table()
+
+rejections.melt <- melt(rejections, variable.name='statistic', id.vars = 'effect', value.name = 'reject') 
+rejections.melt[,c("effect.factor"):=list(as.factor(effect)),] 
+
+# Reorder levels
+# rejections.melt$statistic <- factor(rejections.melt$statistic, levels=statistic.levels)
+# levels(rejections.melt$statistic)
+
+# Filter statistics
+rejections.melt <- rejections.melt[!is.na(statistic),,]
+```
+
+
+```{r}
+plot.3 <- rejections.melt %>% 
+  ggplot(aes(y=reject, x=statistic, group=effect.factor, shape=effect.factor, color=effect.factor)) +
+  theme_bw(base_size = 20)+
+  theme(legend.position="none")+
+  # ggtitle("Fixed signal, Gaussian Noise")+
+  ylab('Power')+
+  xlab('')+
+  stat_summary(fun.y='mean', geom="point", cex=4) +
+  geom_hline(yintercept=0.05, lty=2)+
+  # geom_vline(xintercept=.limits, lty=c(3,2,3))+
+  coord_flip()
+plot(plot.3)
+
+pdf(file = paste('Output/',file.name,'.pdf', sep=''))
+plot(plot.3)
+dev.off()
+```
+
+
