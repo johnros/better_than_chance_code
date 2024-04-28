@@ -1,6 +1,7 @@
 # Better-Than-Chance R code
 
 Source code accompanying the Better-Than-Chance Biostatistics paper. 
+It is designed to be parallelized on a strong linux server. 
 
 ## Main text
 
